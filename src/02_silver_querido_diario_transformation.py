@@ -98,7 +98,8 @@ print(f"Schema: {len(bronze_df.columns)} columns")
 # COMMAND ----------
 
 # DBTITLE 1,Apply Silver Transformations
-# Apply all silver layer transformations
+# Apply silver layer transformations - METADATA ONLY (no text fetching yet)
+# Text content will be fetched and updated incrementally in a separate step
 
 silver_df = (
     bronze_df
@@ -124,29 +125,20 @@ silver_df = (
                                     F.col("date"), 
                                     F.coalesce(F.col("edition"), F.lit(""))), 256))
     
-    # 5. Fetch text content from txt_url using UDF
-    .withColumn("fetch_result", fetch_text_content(F.col("txt_url")))
+    # 5. Initialize text content fields as NULL (will be populated later)
+    .withColumn("text_content", F.lit(None).cast("string"))
+    .withColumn("content_extraction_status", F.lit("pending"))
+    .withColumn("content_error_message", F.lit(None).cast("string"))
+    .withColumn("has_content", F.lit(False))
+    .withColumn("text_length", F.lit(0).cast("int"))
+    .withColumn("text_preview", F.lit(None).cast("string"))
+    .withColumn("word_count", F.lit(0).cast("int"))
+    .withColumn("content_extracted_at", F.lit(None).cast("timestamp"))
     
-    # 6. Extract fields from UDF result
-    .withColumn("text_content", F.col("fetch_result.content"))
-    .withColumn("content_extraction_status", F.col("fetch_result.status"))
-    .withColumn("content_error_message", F.col("fetch_result.error_message"))
-    .drop("fetch_result")
-    
-    # 7. Calculate content metrics
-    .withColumn("has_content", F.col("text_content").isNotNull())
-    .withColumn("text_length", F.length(F.col("text_content")))
-    .withColumn("text_preview", F.substring(F.col("text_content"), 1, 500))
-    .withColumn("word_count", 
-                F.when(F.col("text_content").isNotNull(),
-                       F.size(F.split(F.trim(F.col("text_content")), "\\s+")))
-                 .otherwise(0))
-    
-    # 8. Add processing timestamps
-    .withColumn("content_extracted_at", F.current_timestamp())
+    # 6. Add processing timestamp
     .withColumn("_silver_processed_at", F.current_timestamp())
     
-    # 9. Select and rename columns for final silver schema
+    # 7. Select and rename columns for final silver schema
     .select(
         # Primary identifiers
         "gazette_id",
@@ -164,7 +156,7 @@ silver_df = (
         F.col("url").alias("pdf_url"),
         "txt_url",
         
-        # Text content (core for RAG)
+        # Text content fields (initially NULL/empty)
         "text_content",
         "text_length",
         "text_preview",
@@ -185,92 +177,43 @@ silver_df = (
     )
 )
 
-print(f"✓ Silver transformations applied successfully")
+print(f"✓ Silver transformations applied (metadata only)")
 print(f"Silver DataFrame: {silver_df.count():,} records after deduplication")
+print(f"Note: Text content fields initialized as NULL/pending - will be fetched incrementally")
 
 # COMMAND ----------
 
 # DBTITLE 1,Write to Silver Table
-# Write to silver table with proper schema enforcement
-# Using merge mode for idempotent updates based on gazette_id
-
 from delta.tables import DeltaTable
 
-# Check if silver table exists by querying catalog
-try:
-    spark.table(SILVER_TABLE)
-    table_exists = True
-except:
-    table_exists = False
+# Write metadata to silver table (FAST - no text fetching)
+print("Writing metadata to silver table...")
+
+table_exists = spark.catalog.tableExists(SILVER_TABLE)
 
 if table_exists:
-    print(f"Table {SILVER_TABLE} exists. Performing MERGE operation...")
+    print(f"Table {SILVER_TABLE} exists. Checking for new records...")
     
-    # Create DeltaTable reference
-    delta_table = DeltaTable.forName(spark, SILVER_TABLE)
+    # Identify new records by anti-joining against existing gazette_ids
+    existing_ids = spark.table(SILVER_TABLE).select("gazette_id")
+    new_records_df = silver_df.join(existing_ids, "gazette_id", "left_anti")
+    new_count = new_records_df.count()
     
-    # Merge logic: update existing records or insert new ones based on gazette_id
-    # Explicitly map columns to avoid schema mismatch with old table versions
-    merge_result = (
-        delta_table.alias("target")
-        .merge(
-            silver_df.alias("source"),
-            "target.gazette_id = source.gazette_id"
+    if new_count == 0:
+        print("No new records to insert.")
+    else:
+        print(f"Found {new_count:,} new records. Appending...")
+        (
+            new_records_df
+            .write
+            .format("delta")
+            .mode("append")
+            .saveAsTable(SILVER_TABLE)
         )
-        .whenMatchedUpdate(set={
-            "territory_id": "source.territory_id",
-            "territory_name": "source.territory_name",
-            "state_code": "source.state_code",
-            "publication_date": "source.publication_date",
-            "edition": "source.edition",
-            "is_extra_edition": "source.is_extra_edition",
-            "scraped_at": "source.scraped_at",
-            "pdf_url": "source.pdf_url",
-            "txt_url": "source.txt_url",
-            "text_content": "source.text_content",
-            "text_length": "source.text_length",
-            "text_preview": "source.text_preview",
-            "word_count": "source.word_count",
-            "content_extraction_status": "source.content_extraction_status",
-            "content_error_message": "source.content_error_message",
-            "has_content": "source.has_content",
-            "content_extracted_at": "source.content_extracted_at",
-            "search_excerpts": "source.search_excerpts",
-            "_bronze_ingestion_timestamp": "source._bronze_ingestion_timestamp",
-            "_silver_processed_at": "source._silver_processed_at"
-        })
-        .whenNotMatchedInsert(values={
-            "gazette_id": "source.gazette_id",
-            "territory_id": "source.territory_id",
-            "territory_name": "source.territory_name",
-            "state_code": "source.state_code",
-            "publication_date": "source.publication_date",
-            "edition": "source.edition",
-            "is_extra_edition": "source.is_extra_edition",
-            "scraped_at": "source.scraped_at",
-            "pdf_url": "source.pdf_url",
-            "txt_url": "source.txt_url",
-            "text_content": "source.text_content",
-            "text_length": "source.text_length",
-            "text_preview": "source.text_preview",
-            "word_count": "source.word_count",
-            "content_extraction_status": "source.content_extraction_status",
-            "content_error_message": "source.content_error_message",
-            "has_content": "source.has_content",
-            "content_extracted_at": "source.content_extracted_at",
-            "search_excerpts": "source.search_excerpts",
-            "_bronze_ingestion_timestamp": "source._bronze_ingestion_timestamp",
-            "_silver_processed_at": "source._silver_processed_at"
-        })
-        .execute()
-    )
-    
-    print(f"✓ MERGE completed successfully")
-    
+        print(f"✓ Inserted {new_count:,} new records successfully")
+
 else:
     print(f"Table {SILVER_TABLE} does not exist. Creating new table...")
-    
-    # Create new table with explicit properties
     (
         silver_df.write
         .format("delta")
@@ -280,18 +223,126 @@ else:
         .option("delta.autoOptimize.autoCompact", "true")
         .saveAsTable(SILVER_TABLE)
     )
-    
-    # Add table comment
     spark.sql(f"""
         COMMENT ON TABLE {SILVER_TABLE} IS 
         'Silver layer: cleaned and enriched official gazettes with extracted text content'
     """)
-    
     print(f"✓ Table {SILVER_TABLE} created successfully")
 
-# Verify write
 final_count = spark.table(SILVER_TABLE).count()
-print(f"\nFinal record count in {SILVER_TABLE}: {final_count:,}")
+print(f"\n✓ Metadata write complete. Total records: {final_count:,}")
+print(f"Note: Text content not yet fetched (status='pending'). Run next cell to fetch incrementally.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Fetch and Update Text Content Incrementally
+from delta.tables import DeltaTable
+import time
+
+# Configuration for incremental text fetching
+BATCH_SIZE = 50  # Process 50 URLs at a time
+MAX_BATCHES = None  # Set to a number to limit batches (e.g., 5 for testing), or None for all
+
+print("Starting incremental text content fetching...")
+print(f"Batch size: {BATCH_SIZE} records")
+print("-" * 60)
+
+# Count records that need text content
+pending_count = (
+    spark.table(SILVER_TABLE)
+    .filter(F.col("content_extraction_status") == "pending")
+    .count()
+)
+
+if pending_count == 0:
+    print("✓ No pending records. All text content already fetched.")
+else:
+    print(f"Found {pending_count:,} records with pending text content")
+    
+    total_batches = (pending_count + BATCH_SIZE - 1) // BATCH_SIZE
+    if MAX_BATCHES:
+        total_batches = min(total_batches, MAX_BATCHES)
+        print(f"Processing first {total_batches} batches (limit set)")
+    
+    delta_table = DeltaTable.forName(spark, SILVER_TABLE)
+    
+    batch_num = 0
+    while batch_num < total_batches:
+        batch_num += 1
+        batch_start = time.time()
+        
+        print(f"\nBatch {batch_num}/{total_batches}:")
+        
+        # Select next batch of pending records
+        pending_batch = (
+            spark.table(SILVER_TABLE)
+            .filter(F.col("content_extraction_status") == "pending")
+            .select("gazette_id", "txt_url")
+            .limit(BATCH_SIZE)
+        )
+        
+        batch_count = pending_batch.count()
+        if batch_count == 0:
+            print("  No more pending records.")
+            break
+        
+        print(f"  Fetching text from {batch_count} URLs...")
+        
+        # Fetch text content using the UDF
+        updates_df = (
+            pending_batch
+            .withColumn("fetch_result", fetch_text_content(F.col("txt_url")))
+            .withColumn("text_content", F.col("fetch_result.content"))
+            .withColumn("content_extraction_status", F.col("fetch_result.status"))
+            .withColumn("content_error_message", F.col("fetch_result.error_message"))
+            .drop("fetch_result")
+            .withColumn("has_content", F.col("text_content").isNotNull())
+            .withColumn("text_length", F.length(F.col("text_content")))
+            .withColumn("text_preview", F.substring(F.col("text_content"), 1, 500))
+            .withColumn("word_count", 
+                        F.when(F.col("text_content").isNotNull(),
+                               F.size(F.split(F.trim(F.col("text_content")), "\\s+")))
+                         .otherwise(0))
+            .withColumn("content_extracted_at", F.current_timestamp())
+        )
+        
+        # Merge updates back into the table
+        (
+            delta_table.alias("target")
+            .merge(
+                updates_df.alias("source"),
+                "target.gazette_id = source.gazette_id"
+            )
+            .whenMatchedUpdate(
+                set = {
+                    "text_content": "source.text_content",
+                    "content_extraction_status": "source.content_extraction_status",
+                    "content_error_message": "source.content_error_message",
+                    "has_content": "source.has_content",
+                    "text_length": "source.text_length",
+                    "text_preview": "source.text_preview",
+                    "word_count": "source.word_count",
+                    "content_extracted_at": "source.content_extracted_at"
+                }
+            )
+            .execute()
+        )
+        
+        batch_duration = time.time() - batch_start
+        print(f"  ✓ Updated {batch_count} records in {batch_duration:.1f}s ({batch_duration/batch_count:.2f}s per record)")
+    
+    # Final summary
+    print("\n" + "=" * 60)
+    remaining = (
+        spark.table(SILVER_TABLE)
+        .filter(F.col("content_extraction_status") == "pending")
+        .count()
+    )
+    completed = pending_count - remaining
+    print(f"✓ Text fetching complete: {completed:,} records processed")
+    if remaining > 0:
+        print(f"  {remaining:,} records still pending (run this cell again to continue)")
+    print("=" * 60)
 
 # COMMAND ----------
 

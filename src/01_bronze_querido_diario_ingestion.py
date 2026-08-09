@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Ingestão de teste — API Querido Diário -> Delta Lake (Databricks)
 # MAGIC
@@ -21,6 +25,12 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import (
     StructType, StructField, StringType, DateType, TimestampType, ArrayType
 )
+import random  # adicionar ao topo, junto dos outros imports
+
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+
+MAX_PER_TERRITORY = 120
 
 BASE_URL = "https://api.queridodiario.ok.org.br"
 ENDPOINT = "/gazettes"
@@ -29,18 +39,27 @@ ENDPOINT = "/gazettes"
 # Vale escolher municípios de portes diferentes para já observar
 # variação de qualidade/cobertura no seu TCC.
 TERRITORY_IDS = [
-    "2700706",  # Batalha - AL
     "3550308",  # São Paulo - SP
     "2304400",  # Fortaleza - CE
+    "2611606",  # Recife - PE
+    "2927408",  # Salvador - BA
+    "3106200",  # Belo Horizonte - MG
+    "4106902",  # Curitiba - PR
+    "4314902",  # Porto Alegre - RS
+    "1302603",  # Manaus - AM
+    "5208707",  # Goiânia - GO
+    "2700706",  # Batalha - AL
 ]
 
-PUBLISHED_SINCE = "2024-01-01"
-PUBLISHED_UNTIL = "2024-12-31"
+PUBLISHED_SINCE = "2025-01-01"
+PUBLISHED_UNTIL = "2025-12-31"
 PAGE_SIZE = 50
 
 CATALOG = "workspace"           # ajuste para seu catálogo Unity Catalog
 SCHEMA = "tcc_rag"         # ajuste conforme seu schema
 BRONZE_TABLE = f"{CATALOG}.{SCHEMA}.bronze_querido_diario"
+
+
 
 # COMMAND ----------
 
@@ -110,10 +129,14 @@ for tid in TERRITORY_IDS:
         territory_id=tid,
         published_since=PUBLISHED_SINCE,
         published_until=PUBLISHED_UNTIL,
-        page_size=PAGE_SIZE,
-        max_pages=5,  # limite para teste piloto; remover em execução completa
+        page_size=PAGE_SIZE
     )
-    print(f"  -> {len(records)} registros")
+    
+    # NOVO: aplica o teto por município
+    if len(records) > MAX_PER_TERRITORY:
+        records = random.sample(records, MAX_PER_TERRITORY)
+
+    print(f"  -> {len(records)} registros (após teto de {MAX_PER_TERRITORY})")
     all_records.extend(records)
 
 print(f"\nTotal geral: {len(all_records)} registros")
