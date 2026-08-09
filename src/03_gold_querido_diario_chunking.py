@@ -260,16 +260,16 @@ print("✓ Chunking function defined")
 # DBTITLE 1,Write to Gold Table
 from delta.tables import DeltaTable
 
-# Truncate existing table to start fresh
+# Drop existing table to start completely fresh (avoids schema conflicts)
 if spark.catalog.tableExists(GOLD_TABLE):
-    spark.sql(f"TRUNCATE TABLE {GOLD_TABLE}")
-    print(f"✓ Truncated existing table {GOLD_TABLE}")
+    spark.sql(f"DROP TABLE {GOLD_TABLE}")
+    print(f"✓ Dropped existing table {GOLD_TABLE}")
 
 table_exists = False  # Will be created on first batch
 
 # Process gazettes one at a time to avoid OOM
 BATCH_SIZE = 1  # Process one gazette at a time
-total_gazettes = 58  # From silver_df count
+total_gazettes = 729 # From silver_df count
 
 print(f"Processing {total_gazettes} gazettes one at a time to avoid OOM...")
 print("This may take a while but will be reliable.\n")
@@ -286,7 +286,53 @@ for batch_num in range(total_gazettes):
     batch_df = silver_df.orderBy("gazette_id").offset(batch_num).limit(1)
     
     # Apply chunking
-    chunked_batch = chunk_dataframe(batch_df)
+    # Collect the single row, apply chunking function, then convert back to DataFrame
+    gazette_row = batch_df.collect()[0]
+    gazette_id = gazette_row.gazette_id
+    text_content = gazette_row.text_content
+    
+    # Apply chunking function (returns list of tuples)
+    chunks_list = chunk_text_with_overlap(text_content, gazette_id)
+    
+    # Convert to DataFrame with all metadata from silver layer
+    if len(chunks_list) > 0:
+        from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, DateType
+        
+        # Define the COMPLETE schema upfront with all columns
+        complete_schema = StructType([
+            StructField("chunk_id", StringType(), False),
+            StructField("chunk_text", StringType(), False),
+            StructField("chunk_index", IntegerType(), False),
+            StructField("chunk_char_count", IntegerType(), False),
+            StructField("gazette_id", StringType(), False),
+            StructField("territory_name", StringType(), True),
+            StructField("state_code", StringType(), True),
+            StructField("publication_date", DateType(), True),
+            StructField("chunk_token_count", DoubleType(), False)
+        ])
+        
+        # Build complete rows with all columns at once
+        complete_rows = [
+            (
+                chunk_id,
+                chunk_text,
+                chunk_index,
+                chunk_char_count,
+                gazette_id,
+                gazette_row.territory_name,
+                gazette_row.state_code,
+                gazette_row.publication_date,
+                float(chunk_char_count) / float(AVG_CHARS_PER_TOKEN)
+            )
+            for chunk_id, chunk_text, chunk_index, chunk_char_count in chunks_list
+        ]
+        
+        # Create DataFrame with complete schema in one shot
+        chunked_batch = spark.createDataFrame(complete_rows, schema=complete_schema)
+    else:
+        # Skip if no chunks produced
+        print(f"  ⚠ No chunks produced, skipping")
+        continue
     
     # Write to table (always append or create if doesn't exist)
     if not table_exists:
@@ -343,6 +389,8 @@ print(f"  Avg chunks per gazette: {final_count/gazette_count:.1f}")
 
 # DBTITLE 1,Data Quality Checks
 # Load gold table for validation
+from pyspark.sql.functions import col
+
 gold_df = spark.table(GOLD_TABLE)
 
 print("=" * 60)
