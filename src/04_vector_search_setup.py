@@ -190,6 +190,94 @@ else:
 
 # COMMAND ----------
 
+# DBTITLE 1,Sync Index with Gold Table
+# Sync Vector Search Index with Latest Gold Table Data
+
+print("🔄 Syncing vector search index with gold table...")
+print(f"   Source: {SOURCE_TABLE}")
+print(f"   Index: {INDEX_NAME}")
+print("\n⏳ This may take several minutes depending on the number of new/updated rows...\n")
+
+# Trigger sync
+w.vector_search_indexes.sync_index(INDEX_NAME)
+
+print("✓ Sync initiated successfully!")
+print("\n📝 Note: The sync runs asynchronously in the background.")
+print("   Run the 'Check Index Status' cell to monitor progress.")
+
+# COMMAND ----------
+
+# DBTITLE 1,Switch to CONTINUOUS Mode
+# Recreate Index with CONTINUOUS Mode
+# CONTINUOUS mode automatically processes all rows and keeps index in sync
+
+from databricks.sdk.service.vectorsearch import (
+    VectorIndexType,
+    DeltaSyncVectorIndexSpecRequest,
+    EmbeddingSourceColumn,
+    PipelineType
+)
+
+print("⚠️  IMPORTANT: This will delete and recreate the index.")
+print("   Current index has 144 rows and pipeline stuck in CREATED state.")
+print("   New index will use TRIGGERED mode with proper initialization.\n")
+
+response = input("Proceed with deletion and recreation? (yes/no): ")
+
+if response.lower() == "yes":
+    # Check if index exists before trying to delete
+    from databricks.sdk.errors import NotFound
+    import time
+    
+    try:
+        print("\n🔍 Checking if index exists...")
+        w.vector_search_indexes.get_index(INDEX_NAME)
+        print("   Found existing index")
+        print("\n🗑️  Step 1: Deleting old index...")
+        w.vector_search_indexes.delete_index(INDEX_NAME)
+        print("✓ Old index deleted")
+        print("\n⏳ Waiting 10 seconds for cleanup...")
+        time.sleep(10)
+    except NotFound:
+        print("   Index already deleted (from previous attempt)")
+        print("✓ Skipping deletion step")
+    
+    print("\n🆕 Step 2: Creating new index with TRIGGERED mode...")
+    print("   (CONTINUOUS mode not supported in this workspace)\n")
+    
+    delta_sync_spec = DeltaSyncVectorIndexSpecRequest(
+        source_table=SOURCE_TABLE,
+        pipeline_type=PipelineType.TRIGGERED,  # Manual sync mode
+        embedding_source_columns=[
+            EmbeddingSourceColumn(
+                name=EMBEDDING_SOURCE_COLUMN,
+                embedding_model_endpoint_name=EMBEDDING_MODEL
+            )
+        ]
+    )
+    
+    index = w.vector_search_indexes.create_index(
+        name=INDEX_NAME,
+        endpoint_name=ENDPOINT_NAME,
+        primary_key=PRIMARY_KEY,
+        index_type=VectorIndexType.DELTA_SYNC,
+        delta_sync_index_spec=delta_sync_spec
+    )
+    
+    print("✓ New index created with TRIGGERED mode!")
+    print("\n📝 What happens now:")
+    print("   • Pipeline will automatically run ONCE to process all 122,011 rows")
+    print("   • This first run happens automatically (no sync needed)")
+    print("   • After first run completes, future updates require manual sync")
+    print("\n⏳ Initial indexing will take 20-40 minutes for 122K chunks.")
+    print("   Monitor progress by re-running 'Check Index Status' cell.")
+    print("\n🔄 To sync future updates after first run completes:")
+    print("   w.vector_search_indexes.sync_index(INDEX_NAME)")
+else:
+    print("\n❌ Operation cancelled.")
+
+# COMMAND ----------
+
 # DBTITLE 1,Test Semantic Search
 # Step 3: Test Semantic Search
 
