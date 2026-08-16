@@ -314,11 +314,9 @@ for i, row in enumerate(result_data, 1):
 # Step 4: Test Filtered Search (Hybrid Search)
 
 filtered_query = "licitação pública obras"
-filter_state = "AL"
 
 print(f"🔍 Testing filtered semantic search...")
 print(f"   Query: '{filtered_query}'")
-print(f"   Filter: state_code = '{filter_state}'\n")
 
 import json
 
@@ -326,7 +324,6 @@ filtered_results = w.vector_search_indexes.query_index(
     index_name=INDEX_NAME,
     query_text=filtered_query,
     columns=["chunk_id", "chunk_text", "territory_name", "state_code", "publication_date"],
-    filters_json=json.dumps({"state_code": filter_state}),
     num_results=3
 )
 
@@ -353,7 +350,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
 # Step 1: Vector Search - Retrieve relevant chunks
-user_question = "Quantas licitacoes tivemos em Alagoas? Inclua uma tabela com os resultados e data do decreto"
+user_question = "Quantas nomeacoes tivemos? Inclua uma tabela com os resultados e data do decreto"
 
 print(f"🔍 User Question: {user_question}\n")
 print("Step 1: Retrieving relevant chunks from vector index...")
@@ -363,7 +360,6 @@ retrieval_results = w.vector_search_indexes.query_index(
     index_name=INDEX_NAME,
     query_text=user_question,
     columns=["chunk_text", "territory_name", "state_code", "publication_date"],
-    filters_json=json.dumps({"state_code": "AL"}),  # Filter to Alagoas
     num_results=5  # Get top 5 most relevant chunks
 )
 
