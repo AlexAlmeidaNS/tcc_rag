@@ -506,7 +506,7 @@ retrieval_results = w.vector_search_indexes.query_index(
     index_name=INDEX_NAME,
     query_text=user_question,
     columns=["chunk_text", "territory_name", "state_code", "publication_date"],
-    filters_json=json.dumps({"state_code": "AL"}),  # Filter to Alagoas
+    filters_json=json.dumps({"state_code": "PE"}),  # Filter to Alagoas
     num_results=5  # Get top 5 most relevant chunks
 )
 
