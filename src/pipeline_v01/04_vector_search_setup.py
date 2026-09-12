@@ -31,23 +31,91 @@
 # DBTITLE 1,Setup and Configuration
 # Configuration
 from databricks.sdk import WorkspaceClient
+import pyspark.sql.functions as F
+
+# TEST MODE: Set to True to test with 10 records first
+TEST_MODE = False
+TEST_RECORDS = 1000
 
 # Vector Search configuration
 ENDPOINT_NAME = "querido_diario_endpoint"
-SOURCE_TABLE = "workspace.tcc_rag.gold_querido_diario_chunks"
-INDEX_NAME = "workspace.tcc_rag.querido_diario_vector_index"
+SOURCE_TABLE_FULL = "workspace.tcc_rag.gold_quality_variants_chunks"  # Full table (85k chunks)
+SOURCE_TABLE_TEST = "workspace.tcc_rag.gold_quality_variants_chunks_test"  # Test table (10 chunks)
+INDEX_NAME_BASE = "workspace.tcc_rag.querido_diario_vector_index"
+
 PRIMARY_KEY = "chunk_id"
-EMBEDDING_SOURCE_COLUMN = "chunk_text"
+EMBEDDING_SOURCE_COLUMN = "chunk_text"  # Vector Search will embed this column
 EMBEDDING_MODEL = "databricks-bge-large-en"  # Multilingual, 1024 dimensions
+
+# Select configuration based on test mode
+if TEST_MODE:
+    SOURCE_TABLE = SOURCE_TABLE_TEST
+    INDEX_NAME = f"{INDEX_NAME_BASE}_test"
+    print(f"⚠️  TEST MODE ENABLED")
+    print(f"   Using {TEST_RECORDS} records from test table")
+else:
+    SOURCE_TABLE = SOURCE_TABLE_FULL
+    INDEX_NAME = INDEX_NAME_BASE
+    print(f"🚀 FULL MODE")
+    print(f"   Using full table with ~85k records")
 
 # Initialize client
 w = WorkspaceClient()
 
-print("✓ Configuration loaded")
+print(f"\n✓ Configuration loaded")
 print(f"  Endpoint: {ENDPOINT_NAME}")
 print(f"  Source: {SOURCE_TABLE}")
 print(f"  Index: {INDEX_NAME}")
 print(f"  Embedding Model: {EMBEDDING_MODEL}")
+print(f"\n💡 Vector Search will embed '{EMBEDDING_SOURCE_COLUMN}' during indexing")
+
+# COMMAND ----------
+
+# DBTITLE 1,Create Test Table (10 records)
+# Create test table with 1000 records for initial testing
+# This table contains chunk_text (no pre-computed embeddings)
+# Vector Search will embed chunk_text during indexing
+
+if TEST_MODE:
+    print(f"Creating test table: {SOURCE_TABLE_TEST}")
+    print(f"  Source: {SOURCE_TABLE_FULL}")
+    print(f"  Records: {TEST_RECORDS}\n")
+    
+    # Select 1000 records from the full chunks table
+    test_df = (
+        spark.table(SOURCE_TABLE_FULL)
+        .select(
+            "chunk_id",
+            "gazette_id",
+            "quality_variant",
+            "chunk_text",
+            "chunk_index",
+            "chunk_token_count"
+        )
+        .limit(TEST_RECORDS)
+    )
+    
+    # Write to test table
+    test_df.write.format("delta").mode("overwrite").saveAsTable(SOURCE_TABLE_TEST)
+    
+    # Verify
+    test_count = spark.table(SOURCE_TABLE_TEST).count()
+    print(f"✓ Test table created: {test_count} records")
+    
+    # Show sample
+    print(f"\nSample records:")
+    spark.table(SOURCE_TABLE_TEST).select(
+        "chunk_id",
+        "quality_variant",
+        F.substring("chunk_text", 1, 50).alias("chunk_preview")
+    ).show(5, truncate=False)
+    
+    print(f"\n💡 Vector Search will embed the 'chunk_text' column during indexing")
+    print(f"   No pre-computed embeddings needed!")
+else:
+    print(f"✓ FULL MODE - will use existing table: {SOURCE_TABLE_FULL}")
+    count = spark.table(SOURCE_TABLE_FULL).count()
+    print(f"  Records: {count:,}")
 
 # COMMAND ----------
 
@@ -112,6 +180,11 @@ from databricks.sdk.service.vectorsearch import (
     EmbeddingSourceColumn,
     PipelineType
 )
+
+# Enable Change Data Feed on source table (required for Delta Sync indexes)
+print(f"Enabling Change Data Feed on {SOURCE_TABLE}...")
+spark.sql(f"ALTER TABLE {SOURCE_TABLE} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+print(f"✓ Change Data Feed enabled\n")
 
 # Check if index already exists
 try:
@@ -281,32 +354,52 @@ else:
 # DBTITLE 1,Test Semantic Search
 # Step 3: Test Semantic Search
 
-# Test query
-test_query = "decreto lei salário mínimo"
-
-print(f"🔍 Testing semantic search...")
-print(f"   Query: '{test_query}'\n")
-
-results = w.vector_search_indexes.query_index(
-    index_name=INDEX_NAME,
-    query_text=test_query,
-    columns=["chunk_id", "chunk_text", "territory_name", "state_code", "publication_date"],
-    num_results=5
-)
-
-# Access result data
-result_data = results.result.data_array if results.result else []
-print(f"✓ Found {len(result_data)} results\n")
-print("=" * 80)
-
-# Display results
-for i, row in enumerate(result_data, 1):
-    print(f"\nResult #{i}")
-    print(f"  Chunk ID: {row[0]}")
-    print(f"  Territory: {row[2]}, {row[3]}")
-    print(f"  Date: {row[4]}")
-    print(f"  Preview: {row[1][:200]}...")
-    print("-" * 80)
+# First verify the index exists and is ready
+print(f"Checking index status...")
+try:
+    index_info = w.vector_search_indexes.get_index(INDEX_NAME)
+    is_ready = index_info.status.ready if index_info.status else False
+    
+    if not is_ready:
+        print(f"⚠️ Index is not ready yet. Status: {index_info.status.message if index_info.status else 'Unknown'}")
+        print(f"   Please wait for indexing to complete, then re-run this cell.")
+    else:
+        print(f"✓ Index is ready\n")
+        
+        # Test query
+        test_query = "decreto lei salário mínimo"
+        
+        print(f"🔍 Testing semantic search...")
+        print(f"   Query: '{test_query}'\n")
+        
+        results = w.vector_search_indexes.query_index(
+            index_name=INDEX_NAME,
+            query_text=test_query,
+            columns=["chunk_id", "chunk_text", "gazette_id", "quality_variant"],
+            num_results=5
+        )
+        
+        # Access result data
+        result_data = results.result.data_array if results.result else []
+        print(f"✓ Found {len(result_data)} results\n")
+        print("=" * 80)
+        
+        # Display results
+        for i, row in enumerate(result_data, 1):
+            print(f"\nResult #{i}")
+            print(f"  Chunk ID: {row[0]}")
+            print(f"  Gazette ID: {row[2]}")
+            print(f"  Quality Variant: {row[3]}")
+            print(f"  Preview: {row[1][:200]}...")
+            print("-" * 80)
+            
+except Exception as e:
+    print(f"❌ Error: {e}")
+    print(f"\n💡 Troubleshooting:")
+    print(f"   1. Check if the index was deleted (Cell 8 deletes and recreates)")
+    print(f"   2. Re-run Cell 5 to create the index")
+    print(f"   3. Wait for indexing to complete (check Cell 6)")
+    print(f"   4. Then re-run this cell")
 
 # COMMAND ----------
 
@@ -323,7 +416,7 @@ import json
 filtered_results = w.vector_search_indexes.query_index(
     index_name=INDEX_NAME,
     query_text=filtered_query,
-    columns=["chunk_id", "chunk_text", "territory_name", "state_code", "publication_date"],
+    columns=["chunk_id", "chunk_text", "gazette_id", "quality_variant"],
     num_results=3
 )
 
@@ -333,8 +426,8 @@ print("=" * 80)
 for i, row in enumerate(filtered_results.result.data_array if filtered_results.result else [], 1):
     print(f"\nResult #{i}")
     print(f"  Chunk ID: {row[0]}")
-    print(f"  Territory: {row[2]}, {row[3]}")
-    print(f"  Date: {row[4]}")
+    print(f"  Gazette ID: {row[2]}")
+    print(f"  Quality Variant: {row[3]}")
     print(f"  Preview: {row[1][:200]}...")
     print("-" * 80)
 
@@ -350,7 +443,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
 # Step 1: Vector Search - Retrieve relevant chunks
-user_question = "Quantas nomeacoes tivemos? Inclua uma tabela com os resultados e data do decreto"
+user_question = "Quantas decretos tivemos por secretaria? Inclua uma tabela com os resultados e data do decreto"
 
 print(f"🔍 User Question: {user_question}\n")
 print("Step 1: Retrieving relevant chunks from vector index...")
@@ -359,7 +452,7 @@ print("Step 1: Retrieving relevant chunks from vector index...")
 retrieval_results = w.vector_search_indexes.query_index(
     index_name=INDEX_NAME,
     query_text=user_question,
-    columns=["chunk_text", "territory_name", "state_code", "publication_date"],
+    columns=["chunk_text", "gazette_id", "quality_variant"],
     num_results=5  # Get top 5 most relevant chunks
 )
 
@@ -370,9 +463,9 @@ print(f"✓ Retrieved {len(result_data)} relevant chunks\n")
 context_parts = []
 for i, row in enumerate(result_data, 1):
     chunk_text = row[0]
-    territory = row[1]
-    date = row[3]
-    context_parts.append(f"Documento {i} ({territory}, {date}):\n{chunk_text}")
+    gazette_id = row[1]
+    quality_variant = row[2]
+    context_parts.append(f"Documento {i} (Gazette: {gazette_id}, Variant: {quality_variant}):\n{chunk_text}")
 
 context = "\n\n".join(context_parts)
 
@@ -388,7 +481,7 @@ Responda a pergunta do usuário usando APENAS as informações fornecidas no con
 Se a informação não estiver no contexto, diga que não encontrou essa informação específica.
 Cite os documentos relevantes na sua resposta."""
 
-user_prompt = f"""Contexto (documentos municipais de Alagoas):
+user_prompt = f"""Contexto (documentos municipais de Recife):
 
 {context}
 
