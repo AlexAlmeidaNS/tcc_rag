@@ -309,7 +309,7 @@ from ragas.run_config import RunConfig
 
 # Create LLM and embeddings for RAGAS evaluation
 # Use a more capable model as the RAGAS judge (separate from answer generation LLM)
-RAGAS_JUDGE_LLM = "databricks-llama-4-maverick"  # More capable than Llama 3.3 70B
+RAGAS_JUDGE_LLM = "databricks-gpt-oss-120b"  # Large model (120B params)
 print(f"Configuring RAGAS with judge LLM: {RAGAS_JUDGE_LLM}...")
 eval_llm = ChatDatabricks(endpoint=RAGAS_JUDGE_LLM, temperature=0)
 eval_embeddings = DatabricksEmbeddings(endpoint=EMBEDDING_MODEL)
