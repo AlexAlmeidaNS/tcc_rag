@@ -269,7 +269,7 @@ table_exists = False  # Will be created on first batch
 
 # Process gazettes one at a time to avoid OOM
 BATCH_SIZE = 1  # Process one gazette at a time
-total_gazettes = 729 # From silver_df count
+total_gazettes = 118 # From silver_df count
 
 print(f"Processing {total_gazettes} gazettes one at a time to avoid OOM...")
 print("This may take a while but will be reliable.\n")
@@ -278,9 +278,9 @@ print("This may take a while but will be reliable.\n")
 for batch_num in range(total_gazettes):
     print(f"Processing gazette {batch_num + 1}/{total_gazettes}...", end=" ")
 
-    if (batch_num + 1) == 25:
-        print(f"Skipping gazette {batch_num + 1} (known problematic)...")
-        continue
+    # if (batch_num + 1) == 25:
+    #     print(f"Skipping gazette {batch_num + 1} (known problematic)...")
+    #     continue
     
     # Get one gazette using limit and offset directly in SQL
     batch_df = silver_df.orderBy("gazette_id").offset(batch_num).limit(1)

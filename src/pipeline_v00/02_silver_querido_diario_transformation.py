@@ -189,45 +189,16 @@ from delta.tables import DeltaTable
 # Write metadata to silver table (FAST - no text fetching)
 print("Writing metadata to silver table...")
 
-table_exists = spark.catalog.tableExists(SILVER_TABLE)
 
-if table_exists:
-    print(f"Table {SILVER_TABLE} exists. Checking for new records...")
-    
-    # Identify new records by anti-joining against existing gazette_ids
-    existing_ids = spark.table(SILVER_TABLE).select("gazette_id")
-    new_records_df = silver_df.join(existing_ids, "gazette_id", "left_anti")
-    new_count = new_records_df.count()
-    
-    if new_count == 0:
-        print("No new records to insert.")
-    else:
-        print(f"Found {new_count:,} new records. Appending...")
-        (
-            new_records_df
-            .write
-            .format("delta")
-            .mode("append")
-            .saveAsTable(SILVER_TABLE)
-        )
-        print(f"✓ Inserted {new_count:,} new records successfully")
+(
+    silver_df
+    .write
+    .format("delta")
+    .mode("overwrite")
+    .saveAsTable(SILVER_TABLE)
+)
+print(f"✓ Inserted {silver_df.count():,} new records successfully")
 
-else:
-    print(f"Table {SILVER_TABLE} does not exist. Creating new table...")
-    (
-        silver_df.write
-        .format("delta")
-        .mode("overwrite")
-        .option("delta.enableChangeDataFeed", "true")
-        .option("delta.autoOptimize.optimizeWrite", "true")
-        .option("delta.autoOptimize.autoCompact", "true")
-        .saveAsTable(SILVER_TABLE)
-    )
-    spark.sql(f"""
-        COMMENT ON TABLE {SILVER_TABLE} IS 
-        'Silver layer: cleaned and enriched official gazettes with extracted text content'
-    """)
-    print(f"✓ Table {SILVER_TABLE} created successfully")
 
 final_count = spark.table(SILVER_TABLE).count()
 print(f"\n✓ Metadata write complete. Total records: {final_count:,}")

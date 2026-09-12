@@ -38,17 +38,21 @@ ENDPOINT = "/gazettes"
 # Exemplo: alguns municípios (código IBGE) para o teste piloto.
 # Vale escolher municípios de portes diferentes para já observar
 # variação de qualidade/cobertura no seu TCC.
+# TERRITORY_IDS = [
+#     "3550308",  # São Paulo - SP
+#     "2304400",  # Fortaleza - CE
+#     "2611606",  # Recife - PE
+#     "2927408",  # Salvador - BA
+#     "3106200",  # Belo Horizonte - MG
+#     "4106902",  # Curitiba - PR
+#     "4314902",  # Porto Alegre - RS
+#     "1302603",  # Manaus - AM
+#     "5208707",  # Goiânia - GO
+#     "2700706",  # Batalha - AL
+# ]
+
 TERRITORY_IDS = [
-    "3550308",  # São Paulo - SP
-    "2304400",  # Fortaleza - CE
     "2611606",  # Recife - PE
-    "2927408",  # Salvador - BA
-    "3106200",  # Belo Horizonte - MG
-    "4106902",  # Curitiba - PR
-    "4314902",  # Porto Alegre - RS
-    "1302603",  # Manaus - AM
-    "5208707",  # Goiânia - GO
-    "2700706",  # Batalha - AL
 ]
 
 PUBLISHED_SINCE = "2025-01-01"
@@ -171,7 +175,7 @@ if all_records:
     (
         sdf.write
         .format("delta")
-        .mode("append")
+        .mode("overwrite")
         .option("mergeSchema", "true")
         .saveAsTable(BRONZE_TABLE)
     )
